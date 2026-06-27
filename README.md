@@ -1,43 +1,51 @@
 # npuscale
 
-**NPU-accelerated video super-resolution using ONNX Runtime.**
+**NPU-accelerated video enhancement using ONNX Runtime — super-resolution and denoising.**
 
-Stock FFmpeg handles decode/encode via pipes; npuscale runs AI inference on your NPU, GPU, or CPU with concurrent in-flight requests for maximum throughput.
+Stock FFmpeg handles decode/encode via pipes; npuscale runs AI inference on your NPU, GPU, or CPU with concurrent in-flight requests for maximum throughput. The pipeline is model-agnostic: give it a super-resolution model to upscale, or a denoise model to clean up noisy footage.
 
 ## What it does
 
-Takes a video at any resolution, runs each frame through a **Real-ESRGAN** super-resolution model, and produces an upscaled video with AI-reconstructed detail — not just pixel stretching.
+Takes a video, runs each frame through an ONNX neural network, and re-encodes the result. Two tasks ship today:
 
-- **Real-ESRGAN AI super-resolution**: RRDB (Residual in Residual Dense Block) × 23 layers reconstruct edges, textures, and fine detail
-- **2× or 4× upscaling**: 1280×720 → 2560×1440 or 5120×2880
+- **Super-resolution** (`realesrgan_x2/x4.onnx`) — Real-ESRGAN RRDB ×23 reconstructs edges and texture for 2× / 4× upscaling
+- **Denoise** (`dncnn_color.onnx`, via the `npudenoise` wrapper) — DnCNN removes sensor/compression noise while keeping resolution
+
+Shared engine:
 - **NPU / GPU acceleration** via DirectML (Windows), or CUDA / CPU on any platform
 - **Pipelined**: decode, inference, and encode run concurrently
-- **In-flight parallelism**: `--workers N` keeps N frames being inferred simultaneously
+- **In-flight parallelism**: `--workers N` keeps N frames being inferred simultaneously (CPU/CUDA; DirectML runs single-worker — see note)
 - **Frame-order guaranteed**: reorder buffer preserves frame order regardless of inference completion order
 - **Audio preserved**: audio stream is copied as-is from the source
 - **Cross-platform**: Windows (DirectML/CUDA/CPU), Linux (CUDA/CPU/OpenVINO¹), macOS (CoreML¹/CPU)
 
 ¹ OpenVINO and CoreML EPs can be added via ONNX Runtime extensions.
 
+> **DirectML + workers:** the DirectML execution provider is not safe under
+> concurrent `Run()` calls on one session, so npuscale automatically uses
+> `--workers 1` with `--provider directml`. For multi-worker parallelism use
+> `--provider cpu` (or `cuda`).
+
 ## Requirements
 
 - [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 - `ffmpeg` and `ffprobe` in PATH ([download](https://ffmpeg.org/download.html))
-- A Real-ESRGAN ONNX model (download from [Releases](../../releases/latest))
+- An ONNX model (download from [Releases](../../releases/latest))
 
 ## Installation
 
 1. Download `npuscale-v1.1-win-x64.zip` from [Releases](../../releases/latest) and extract
-2. Download `realesrgan_x2.onnx` (2×) and/or `realesrgan_x4.onnx` (4×) from the same release page
+2. Download the model(s) you need from the same release page
 
 ## Models
 
-| Model | Scale | Output from 1280×720 | Size | Description |
-|-------|-------|----------------------|------|-------------|
-| `realesrgan_x2.onnx` | 2× | 2560×1440 | 64 MB | Real-ESRGAN x2plus — AI 2× super-resolution |
-| `realesrgan_x4.onnx` | 4× | 5120×2880 | 64 MB | Real-ESRGAN x4plus — AI 4× super-resolution |
+| Model | Task | Output from 1280×720 | Size | Description |
+|-------|------|----------------------|------|-------------|
+| `realesrgan_x2.onnx` | SR 2× | 2560×1440 | 64 MB | Real-ESRGAN x2plus — AI upscaling |
+| `realesrgan_x4.onnx` | SR 4× | 5120×2880 | 64 MB | Real-ESRGAN x4plus — AI upscaling |
+| `dncnn_color.onnx` | Denoise | 1280×720 (same) | 2.6 MB | DnCNN color blind Gaussian denoiser |
 
-Both models use official weights from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) converted to ONNX format.
+SR models use official weights from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN); the denoise model uses [cszn/KAIR](https://github.com/cszn/KAIR) DnCNN weights — both converted to ONNX.
 
 ### Real-ESRGAN vs. simple upscaling
 
@@ -74,13 +82,43 @@ npuscale -i input.mp4 -o output_4x.mp4 --model realesrgan_x4.onnx --provider cud
 npuscale -i input.mp4 -o output_4x.mp4 --model realesrgan_x4.onnx --provider cpu --workers 4 -v
 ```
 
+### Denoise
+
+The `npudenoise` wrapper injects the DnCNN model so you only pass input/output:
+
+```bash
+# Windows
+npudenoise -i noisy.mp4 -o clean.mp4 --provider directml -v
+
+# Linux / macOS
+./npudenoise.sh -i noisy.mp4 -o clean.mp4 --provider cpu --workers 4 -v
+```
+
+Or call npuscale directly with the model:
+```bash
+npuscale -i noisy.mp4 -o clean.mp4 --model dncnn_color.onnx --provider directml -v
+```
+
+**Measured** — clean 1080p reference, Gaussian noise σ≈25 added, then denoised
+(metrics vs. the clean reference, higher = closer to clean):
+
+| Metric | Noisy | Denoised |
+|--------|------:|---------:|
+| PSNR | 31.0 dB | **37.6 dB** (+6.6) |
+| SSIM | 0.727 | **0.941** |
+
+PSNR and SSIM — the standard denoising metrics — improve substantially, and the
+denoised file is ~4× smaller (noise no longer wastes bitrate). Note that VMAF can
+*drop* slightly on denoised video: it is tuned for compression artifacts and tends
+to read fine noise as "texture," so it is not a reliable denoise metric.
+
 ### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-i PATH` | (required) | Input video |
 | `-o PATH` | (required) | Output video |
-| `--model PATH` | (required) | ONNX super-resolution model |
+| `--model PATH` | (required) | ONNX model (super-resolution or denoise) |
 | `--provider NAME` | `directml` | Execution provider: `directml`, `cuda`, `cpu` |
 | `--device-id N` | `0` | GPU/NPU device index |
 | `--workers N` | `2` | Concurrent inference workers |
@@ -126,7 +164,8 @@ Requires Python 3.10+ and PyTorch:
 ```bash
 pip install torch onnx onnxscript
 cd tools
-python convert_realesrgan.py   # downloads weights and exports realesrgan_x2.onnx + realesrgan_x4.onnx
+python convert_realesrgan.py   # -> realesrgan_x2.onnx + realesrgan_x4.onnx (super-resolution)
+python convert_dncnn.py        # -> dncnn_color.onnx (denoise)
 ```
 
 ## How Real-ESRGAN super-resolution works

@@ -54,9 +54,21 @@ public static class Program
         if (!File.Exists(input))  { Console.Error.WriteLine($"Input not found: {input}");  return 1; }
         if (!File.Exists(model))  { Console.Error.WriteLine($"Model not found: {model}");  return 1; }
 
+        // The DirectML execution provider is not safe under concurrent Run() calls
+        // on a single shared session (it throws mid-inference). One session per
+        // worker would fix it, but is heavy; for now clamp DirectML to 1 worker.
+        // CPU/CUDA providers run multiple workers concurrently as usual.
+        if (workers > 1 && provider.Equals("directml", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                "Note: DirectML does not support concurrent workers on one session; " +
+                "using --workers 1. (Use --provider cpu for multi-worker parallelism.)");
+            workers = 1;
+        }
+
         if (verbose)
         {
-            Console.Error.WriteLine("npuscale — NPU-accelerated video super-resolution");
+            Console.Error.WriteLine("npuscale — NPU video enhancement (super-resolution / denoise)");
             Console.Error.WriteLine($"Provider: {provider}, Device: {deviceId}, Workers: {workers}");
             Console.Error.WriteLine($"Model: {model}, Layout: {(nchw ? "NCHW" : "NHWC")}, Range: 0..{rangeMax}");
         }

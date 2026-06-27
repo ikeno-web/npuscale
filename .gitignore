@@ -3,6 +3,10 @@ obj/
 *.user
 .vs/
 publish/
+release/
 *.mp4
 *.avi
 *.mkv
+# model weights / exports — shipped as release assets, not in git
+*.onnx
+*.pth
