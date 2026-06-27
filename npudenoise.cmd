@@ -1,9 +1,5 @@
 @echo off
-REM npudenoise — NPU video denoising (DnCNN color blind), built on npuscale.
-REM Injects the denoise model and forwards all other npuscale arguments.
-REM
-REM Usage:
-REM   npudenoise -i input.mp4 -o output.mp4 [--provider directml] [-v]
-setlocal
-set "DIR=%~dp0"
-npuscale --model "%DIR%dncnn_color.onnx" %*
+REM npudenoise — NPU video denoising (DnCNN), built on npuscale.
+REM Injects the bundled denoise model; forwards all other npuscale arguments.
+REM Usage: npudenoise -i input.mp4 -o output.mp4 [--provider directml] [-v]
+"%~dp0npuscale.exe" --model "%~dp0dncnn_color.onnx" %*
