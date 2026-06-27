@@ -198,17 +198,18 @@ Low-resolution training input  →  network  →  reconstructed HR  →  loss vs
 
 By training on this wide range of degradation types, the model generalizes to real compressed video, not just clean synthetic downscales. This is why it handles blocky MPEG artifacts, motion blur, and encoding noise — not just pure resolution loss.
 
-### Why upscale → downscale does NOT negate the benefit
+### When super-resolution is effective — and when it isn't
 
-The value of Real-ESRGAN is realized **at display time on a high-resolution screen**, not by measuring pixels at the original resolution:
+The value of Real-ESRGAN is realized **at display time on a high-resolution screen**, not by measuring pixels at the original resolution.
 
-| Scenario | Effect |
-|----------|--------|
-| 720p played on a 4K TV | The TV's built-in scaler uses simple bilinear — Real-ESRGAN pre-upscaling is sharper |
-| Upscale 720p → 4K, store as master | Permanent 4K archive with reconstructed detail |
-| Upscale 720p → 4K → downscale to 1080p | The SR step restores detail before downsampling, producing a cleaner 1080p than direct 720p→1080p |
+| Use case | Effect | Reason |
+|----------|--------|--------|
+| 720p video played on a 4K TV / monitor | ✅ High | TV's built-in scaler uses simple bilinear interpolation. Real-ESRGAN pre-upscaling produces visibly sharper edges and reconstructed texture |
+| Upscale 720p → 4K and store as archive master | ✅ High | Permanent 4K file with AI-reconstructed detail. Playback quality no longer depends on the player's scaler |
+| Upscale 720p → 4K → downscale to 1080p | ⚡ Moderate | SR restores detail before downsampling. The result is often cleaner than direct 720p → 1080p bicubic, because downsampling from 4K acts as antialiasing on the generated detail |
+| Upscale 720p → 1440p → **downscale back to 720p** | ❌ Minimal | Returning to the original resolution recovers no information. This is the "upscale then downscale" case where SR provides no benefit |
 
-"Upscale then downscale to the same original resolution" is the one case where the benefit disappears — but that is not the intended use.
+> **Summary:** if the output will be viewed or stored at the higher resolution, Real-ESRGAN improves quality. Upscaling only to immediately downscale to the same source resolution is pointless — but that is not the intended use of this tool.
 
 ## Architecture
 
