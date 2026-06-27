@@ -1,0 +1,8 @@
+bin/
+obj/
+*.user
+.vs/
+publish/
+*.mp4
+*.avi
+*.mkv
