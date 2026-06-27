@@ -89,8 +89,8 @@ Two denoisers ship, trading speed for quality:
 
 | Model | Type | Speed¹ | Quality | Notes |
 |-------|------|-------:|---------|-------|
-| `dncnn_color.onnx` | Spatial (1 frame) | ~7 fps | good | DnCNN; the `npudenoise` default |
-| `fastdvdnet_s25.onnx` | **Temporal (5 frames)** | ~3.5 fps | **best** | FastDVDnet; uses neighbouring frames |
+| `dncnn_color.onnx` | Spatial (1 frame) | ~11 fps | good | DnCNN; the `npudenoise` default |
+| `fastdvdnet_s25.onnx` | **Temporal (5 frames)** | ~8 fps | **best** | FastDVDnet; uses neighbouring frames |
 
 ¹ 1080p on an RTX 4090 via DirectML.
 

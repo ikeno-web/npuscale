@@ -1,3 +1,4 @@
+using System.Buffers;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 
@@ -75,75 +76,77 @@ public sealed class OnnxProcessor : IDisposable
         var dims = _nchw
             ? new[] { 1, 3 * n, height, width }
             : new[] { 1, height, width, 3 };
-        var inputTensor = new DenseTensor<float>(dims);
 
-        if (_nchw)
+        // Pack into a flat buffer with linear writes — far faster than the
+        // multi-dimensional DenseTensor indexer (which recomputes strides per
+        // element). Rented from the pool to avoid a large per-frame allocation.
+        int inLen = 3 * n * pixels;
+        float[] input = ArrayPool<float>.Shared.Rent(inLen);
+        try
         {
-            for (int f = 0; f < n; f++)
+            if (_nchw)
             {
-                var src = frames[f];
-                int c0 = 3 * f;
-                for (int i = 0; i < pixels; i++)
+                // NCHW: channel plane c starts at c·pixels; pixel i sits at +i.
+                for (int f = 0; f < n; f++)
                 {
-                    int y = i / width, x = i % width;
-                    inputTensor[0, c0,     y, x] = src[i * 3]     * scale;
-                    inputTensor[0, c0 + 1, y, x] = src[i * 3 + 1] * scale;
-                    inputTensor[0, c0 + 2, y, x] = src[i * 3 + 2] * scale;
+                    var src = frames[f];
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int plane = (3 * f + c) * pixels;
+                        for (int i = 0; i < pixels; i++)
+                            input[plane + i] = src[i * 3 + c] * scale;
+                    }
                 }
             }
-        }
-        else
-        {
-            var src = frames[0];
-            for (int i = 0; i < pixels; i++)
+            else
             {
-                int y = i / width, x = i % width;
-                inputTensor[0, y, x, 0] = src[i * 3]     * scale;
-                inputTensor[0, y, x, 1] = src[i * 3 + 1] * scale;
-                inputTensor[0, y, x, 2] = src[i * 3 + 2] * scale;
+                // NHWC interleaved == packed RGB order, so just scale in place.
+                var src = frames[0];
+                for (int k = 0; k < inLen; k++)
+                    input[k] = src[k] * scale;
             }
-        }
 
-        var inputs = new List<NamedOnnxValue>
-        {
-            NamedOnnxValue.CreateFromTensor(_inputName, inputTensor)
-        };
-
-        using var results = _session.Run(inputs);
-        var outTensor = results.First().AsTensor<float>();
-        var outDims = outTensor.Dimensions;
-
-        int outH = _nchw ? outDims[2] : outDims[1];
-        int outW = _nchw ? outDims[3] : outDims[2];
-        OutputWidth  = outW;
-        OutputHeight = outH;
-
-        int outPixels = outH * outW;
-        var output = new byte[outPixels * 3];
-        float inv = 255f / _rangeMax;
-
-        if (_nchw)
-        {
-            for (int i = 0; i < outPixels; i++)
+            var inputTensor = new DenseTensor<float>(input.AsMemory(0, inLen), dims);
+            var inputs = new List<NamedOnnxValue>
             {
-                int y = i / outW, x = i % outW;
-                output[i * 3]     = Clamp(outTensor[0, 0, y, x] * inv);
-                output[i * 3 + 1] = Clamp(outTensor[0, 1, y, x] * inv);
-                output[i * 3 + 2] = Clamp(outTensor[0, 2, y, x] * inv);
-            }
-        }
-        else
-        {
-            for (int i = 0; i < outPixels; i++)
-            {
-                int y = i / outW, x = i % outW;
-                output[i * 3]     = Clamp(outTensor[0, y, x, 0] * inv);
-                output[i * 3 + 1] = Clamp(outTensor[0, y, x, 1] * inv);
-                output[i * 3 + 2] = Clamp(outTensor[0, y, x, 2] * inv);
-            }
-        }
+                NamedOnnxValue.CreateFromTensor(_inputName, inputTensor)
+            };
 
-        return output;
+            using var results = _session.Run(inputs);
+            var outTensor = (DenseTensor<float>)results.First().AsTensor<float>();
+            var outDims = outTensor.Dimensions;
+            var os = outTensor.Buffer.Span;
+
+            int outH = _nchw ? outDims[2] : outDims[1];
+            int outW = _nchw ? outDims[3] : outDims[2];
+            OutputWidth  = outW;
+            OutputHeight = outH;
+
+            int outPixels = outH * outW;
+            var output = new byte[outPixels * 3];
+            float inv = 255f / _rangeMax;
+
+            if (_nchw)
+            {
+                for (int c = 0; c < 3; c++)
+                {
+                    int plane = c * outPixels;
+                    for (int i = 0; i < outPixels; i++)
+                        output[i * 3 + c] = Clamp(os[plane + i] * inv);
+                }
+            }
+            else
+            {
+                for (int k = 0; k < outPixels * 3; k++)
+                    output[k] = Clamp(os[k] * inv);
+            }
+
+            return output;
+        }
+        finally
+        {
+            ArrayPool<float>.Shared.Return(input);
+        }
     }
 
     private static byte Clamp(float v) =>
