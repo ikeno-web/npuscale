@@ -199,7 +199,8 @@ public sealed class Pipeline(
         int outW = processor.OutputWidth, outH = processor.OutputHeight;
         if (verbose)
             Console.Error.WriteLine(
-                $"Output: {outW}x{outH} (temporal denoise, {window}-frame window)");
+                $"Output: {outW}x{outH} (temporal, {window}-frame window, " +
+                $"{outW / (double)info.Width:F2}x)");
 
         using var enc = FfmpegPipes.StartEncoder(inputPath, outputPath,
             outW, outH, info.Fps, info.HasAudio, encoder, crf);

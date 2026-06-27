@@ -129,6 +129,24 @@ shown for reference but is tuned for compression artifacts and reads fine noise 
 > moderate noise. Re-export with a different σ via `tools/convert_fastdvdnet.py`
 > for heavier/lighter noise.
 
+### Temporal super-resolution (experimental)
+
+The pipeline handles models that are **both** temporal *and* upscaling — a model
+taking N stacked frames and emitting a higher-resolution frame. The window size
+is auto-detected from the input channel count and the scale from the output
+tensor, so no extra flags are needed:
+
+```bash
+npuscale -i in.mp4 -o out.mp4 --model temporal_sr2x_avg.onnx --provider directml -v
+# Output: 3840x2160 (temporal, 3-frame window, 2.00x)
+```
+
+`tools/convert_temporal_sr.py` builds a small baseline model (3-frame temporal
+average + 2× upscale) that validates this path end to end. Production-grade video
+SR networks (EDVR, BasicVSR++) rely on deformable convolution and recurrent flow
+propagation that do **not** export to standard ONNX — so a high-quality temporal
+SR model is future work, but the pipeline is ready for one.
+
 ### Options
 
 | Option | Default | Description |
