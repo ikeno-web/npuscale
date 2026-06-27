@@ -21,6 +21,16 @@ Shared engine:
 
 ¹ OpenVINO and CoreML EPs can be added via ONNX Runtime extensions.
 
+## Examples
+
+**Super-resolution** — bicubic vs Real-ESRGAN (4× upscale of a low-res crop):
+
+![Super-resolution: bicubic vs Real-ESRGAN](docs/sr_compare.png)
+
+**Denoise** — noisy input vs DnCNN (σ≈25 Gaussian noise removed):
+
+![Denoise: noisy vs DnCNN](docs/denoise_compare.png)
+
 > **DirectML + workers:** the DirectML execution provider is not safe under
 > concurrent `Run()` calls on one session, so npuscale automatically uses
 > `--workers 1` with `--provider directml`. For multi-worker parallelism use

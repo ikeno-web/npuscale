@@ -10,3 +10,5 @@ release/
 # model weights / exports — shipped as release assets, not in git
 *.onnx
 *.pth
+_src_frame.png
+tools/_*.png
