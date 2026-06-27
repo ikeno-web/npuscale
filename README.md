@@ -43,9 +43,10 @@ Shared engine:
 |-------|------|----------------------|------|-------------|
 | `realesrgan_x2.onnx` | SR 2× | 2560×1440 | 64 MB | Real-ESRGAN x2plus — AI upscaling |
 | `realesrgan_x4.onnx` | SR 4× | 5120×2880 | 64 MB | Real-ESRGAN x4plus — AI upscaling |
-| `dncnn_color.onnx` | Denoise | 1280×720 (same) | 2.6 MB | DnCNN color blind Gaussian denoiser |
+| `dncnn_color.onnx` | Denoise (spatial) | 1280×720 (same) | 2.6 MB | DnCNN color blind — fast |
+| `fastdvdnet_s25.onnx` | Denoise (temporal) | 1280×720 (same) | 9.5 MB | FastDVDnet — 5-frame, best quality |
 
-SR models use official weights from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN); the denoise model uses [cszn/KAIR](https://github.com/cszn/KAIR) DnCNN weights — both converted to ONNX.
+SR models use official weights from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN); denoisers use [cszn/KAIR](https://github.com/cszn/KAIR) (DnCNN) and [m-tassano/FastDVDnet](https://github.com/m-tassano/fastdvdnet) weights — all converted to ONNX.
 
 ### Real-ESRGAN vs. simple upscaling
 
@@ -84,33 +85,45 @@ npuscale -i input.mp4 -o output_4x.mp4 --model realesrgan_x4.onnx --provider cpu
 
 ### Denoise
 
-The `npudenoise` wrapper injects the DnCNN model so you only pass input/output:
+Two denoisers ship, trading speed for quality:
 
+| Model | Type | Speed¹ | Quality | Notes |
+|-------|------|-------:|---------|-------|
+| `dncnn_color.onnx` | Spatial (1 frame) | ~7 fps | good | DnCNN; the `npudenoise` default |
+| `fastdvdnet_s25.onnx` | **Temporal (5 frames)** | ~3.5 fps | **best** | FastDVDnet; uses neighbouring frames |
+
+¹ 1080p on an RTX 4090 via DirectML.
+
+**Spatial** (fast) — the `npudenoise` wrapper injects the DnCNN model:
 ```bash
-# Windows
-npudenoise -i noisy.mp4 -o clean.mp4 --provider directml -v
-
-# Linux / macOS
-./npudenoise.sh -i noisy.mp4 -o clean.mp4 --provider cpu --workers 4 -v
+npudenoise -i noisy.mp4 -o clean.mp4 --provider directml -v          # Windows
+./npudenoise.sh -i noisy.mp4 -o clean.mp4 --provider cpu --workers 4  # Linux/macOS
 ```
 
-Or call npuscale directly with the model:
+**Temporal** (best quality) — point npuscale at the FastDVDnet model; the pipeline
+auto-detects the 5-frame window from the model and slides it across the video:
 ```bash
-npuscale -i noisy.mp4 -o clean.mp4 --model dncnn_color.onnx --provider directml -v
+npuscale -i noisy.mp4 -o clean.mp4 --model fastdvdnet_s25.onnx --provider directml -v
 ```
 
 **Measured** — clean 1080p reference, Gaussian noise σ≈25 added, then denoised
 (metrics vs. the clean reference, higher = closer to clean):
 
-| Metric | Noisy | Denoised |
-|--------|------:|---------:|
-| PSNR | 31.0 dB | **37.6 dB** (+6.6) |
-| SSIM | 0.727 | **0.941** |
+| Method | PSNR | SSIM | VMAF |
+|--------|-----:|-----:|-----:|
+| Noisy (input) | 31.0 dB | 0.727 | 88.4 |
+| DnCNN — spatial | 37.6 dB | 0.941 | 85.0 |
+| **FastDVDnet — temporal** | **39.2 dB** | **0.960** | **86.1** |
 
-PSNR and SSIM — the standard denoising metrics — improve substantially, and the
-denoised file is ~4× smaller (noise no longer wastes bitrate). Note that VMAF can
-*drop* slightly on denoised video: it is tuned for compression artifacts and tends
-to read fine noise as "texture," so it is not a reliable denoise metric.
+The temporal model wins on every metric: by reusing detail from neighbouring
+frames it removes noise *without* the spatial over-smoothing that a single-frame
+denoiser falls back on. PSNR and SSIM are the standard denoising metrics; VMAF is
+shown for reference but is tuned for compression artifacts and reads fine noise as
+"texture," so it is not a reliable denoise metric.
+
+> `fastdvdnet_s25.onnx` has a fixed noise level (σ=25) baked in — ideal for
+> moderate noise. Re-export with a different σ via `tools/convert_fastdvdnet.py`
+> for heavier/lighter noise.
 
 ### Options
 
@@ -165,7 +178,8 @@ Requires Python 3.10+ and PyTorch:
 pip install torch onnx onnxscript
 cd tools
 python convert_realesrgan.py   # -> realesrgan_x2.onnx + realesrgan_x4.onnx (super-resolution)
-python convert_dncnn.py        # -> dncnn_color.onnx (denoise)
+python convert_dncnn.py        # -> dncnn_color.onnx (spatial denoise)
+python convert_fastdvdnet.py   # -> fastdvdnet_s25.onnx (temporal denoise, 5-frame)
 ```
 
 ## How Real-ESRGAN super-resolution works

@@ -14,6 +14,11 @@ public sealed class OnnxProcessor : IDisposable
     public int OutputWidth { get; private set; }
     public int OutputHeight { get; private set; }
 
+    /// Number of consecutive frames the model consumes per inference, inferred
+    /// from the input channel count (3·N). 1 for SR / spatial denoise; N>1 for
+    /// temporal models (e.g. FastDVDnet = 5).
+    public int InputFrameCount { get; }
+
     public OnnxProcessor(string modelPath, string provider, int deviceId,
         bool nchw = true, float rangeMax = 1.0f)
     {
@@ -38,38 +43,64 @@ public sealed class OnnxProcessor : IDisposable
         _session = new InferenceSession(modelPath, opts);
         _inputName = _session.InputMetadata.Keys.First();
         _outputName = _session.OutputMetadata.Keys.First();
+
+        // Infer how many stacked frames the model expects from its channel dim
+        // (NCHW: dims[1], NHWC: dims[3]). Dynamic/unknown -> single frame.
+        var dims = _session.InputMetadata[_inputName].Dimensions;
+        int channels = _nchw
+            ? (dims.Length > 1 ? dims[1] : 3)
+            : (dims.Length > 3 ? dims[3] : 3);
+        InputFrameCount = channels > 0 ? Math.Max(1, channels / 3) : 1;
     }
 
-    // Thread-safe: InferenceSession.Run is safe to call concurrently.
-    // Each worker should call Process with its own rgb24/output buffers.
+    // Single-frame convenience (super-resolution / spatial denoise).
+    // Thread-safe: InferenceSession.Run is safe to call concurrently (CPU/CUDA);
+    // each worker should pass its own buffers.
     public byte[] Process(byte[] rgb24, int width, int height)
+        => ProcessWindow(new[] { rgb24 }, width, height);
+
+    // Processes a window of N consecutive frames stacked on the channel axis:
+    // the input tensor is (1, 3·N, H, W). N==1 is the ordinary single-frame case;
+    // temporal models (N>1, e.g. FastDVDnet) require NCHW layout.
+    public byte[] ProcessWindow(IReadOnlyList<byte[]> frames, int width, int height)
     {
+        int n = frames.Count;
         int pixels = width * height;
         float scale = _rangeMax / 255f;
 
+        if (n > 1 && !_nchw)
+            throw new InvalidOperationException(
+                "Temporal (multi-frame) models require NCHW layout.");
+
         var dims = _nchw
-            ? new[] { 1, 3, height, width }
+            ? new[] { 1, 3 * n, height, width }
             : new[] { 1, height, width, 3 };
         var inputTensor = new DenseTensor<float>(dims);
 
         if (_nchw)
         {
-            for (int i = 0; i < pixels; i++)
+            for (int f = 0; f < n; f++)
             {
-                int y = i / width, x = i % width;
-                inputTensor[0, 0, y, x] = rgb24[i * 3]     * scale;
-                inputTensor[0, 1, y, x] = rgb24[i * 3 + 1] * scale;
-                inputTensor[0, 2, y, x] = rgb24[i * 3 + 2] * scale;
+                var src = frames[f];
+                int c0 = 3 * f;
+                for (int i = 0; i < pixels; i++)
+                {
+                    int y = i / width, x = i % width;
+                    inputTensor[0, c0,     y, x] = src[i * 3]     * scale;
+                    inputTensor[0, c0 + 1, y, x] = src[i * 3 + 1] * scale;
+                    inputTensor[0, c0 + 2, y, x] = src[i * 3 + 2] * scale;
+                }
             }
         }
         else
         {
+            var src = frames[0];
             for (int i = 0; i < pixels; i++)
             {
                 int y = i / width, x = i % width;
-                inputTensor[0, y, x, 0] = rgb24[i * 3]     * scale;
-                inputTensor[0, y, x, 1] = rgb24[i * 3 + 1] * scale;
-                inputTensor[0, y, x, 2] = rgb24[i * 3 + 2] * scale;
+                inputTensor[0, y, x, 0] = src[i * 3]     * scale;
+                inputTensor[0, y, x, 1] = src[i * 3 + 1] * scale;
+                inputTensor[0, y, x, 2] = src[i * 3 + 2] * scale;
             }
         }
 
