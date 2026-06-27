@@ -44,7 +44,7 @@ Shared engine:
 | `realesrgan_x2.onnx` | SR 2× | 2560×1440 | 64 MB | Real-ESRGAN x2plus — AI upscaling |
 | `realesrgan_x4.onnx` | SR 4× | 5120×2880 | 64 MB | Real-ESRGAN x4plus — AI upscaling |
 | `dncnn_color.onnx` | Denoise (spatial) | 1280×720 (same) | 2.6 MB | DnCNN color blind — fast |
-| `fastdvdnet_s25.onnx` | Denoise (temporal) | 1280×720 (same) | 9.5 MB | FastDVDnet — 5-frame, best quality |
+| `fastdvdnet_s15/s25/s50.onnx` | Denoise (temporal) | 1280×720 (same) | 9.5 MB | FastDVDnet — 5-frame, best quality (pick σ for noise level) |
 
 SR models use official weights from [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN); denoisers use [cszn/KAIR](https://github.com/cszn/KAIR) (DnCNN) and [m-tassano/FastDVDnet](https://github.com/m-tassano/fastdvdnet) weights — all converted to ONNX.
 
@@ -100,11 +100,15 @@ npudenoise -i noisy.mp4 -o clean.mp4 --provider directml -v          # Windows
 ./npudenoise.sh -i noisy.mp4 -o clean.mp4 --provider cpu --workers 4  # Linux/macOS
 ```
 
-**Temporal** (best quality) — point npuscale at the FastDVDnet model; the pipeline
+**Temporal** (best quality) — point npuscale at a FastDVDnet model; the pipeline
 auto-detects the 5-frame window from the model and slides it across the video:
 ```bash
 npuscale -i noisy.mp4 -o clean.mp4 --model fastdvdnet_s25.onnx --provider directml -v
 ```
+
+FastDVDnet is non-blind, so pick the model whose baked-in σ matches your footage:
+`s15` (light), `s25` (moderate), `s50` (heavy). Matching matters — on a σ≈50 clip
+the matched `s50` model scored SSIM 0.917 vs 0.887 for the under-estimating `s25`.
 
 **Measured** — clean 1080p reference, Gaussian noise σ≈25 added, then denoised
 (metrics vs. the clean reference, higher = closer to clean):
