@@ -12,6 +12,19 @@ public sealed class OnnxProcessor : IDisposable
     private readonly bool _nchw;
     private readonly float _rangeMax;
 
+    // ── Persistent IoBinding state (single-worker only; not thread-safe) ──
+    // When enabled, input/output tensors are bound once (dimensions are constant
+    // within a video) and reused every frame, so ORT skips re-wrapping buffers.
+    private bool _reuse;
+    private float[]? _inBuf;
+    private FixedBufferOnnxValue? _inFixed;
+    private float[]? _outBuf;
+    private FixedBufferOnnxValue? _outFixed;
+    private string[]? _inNames, _outNames;
+
+    /// Enable persistent buffer reuse (only safe with a single worker thread).
+    public bool ReuseBuffers { get => _reuse; set => _reuse = value; }
+
     public int OutputWidth { get; private set; }
     public int OutputHeight { get; private set; }
 
@@ -76,71 +89,30 @@ public sealed class OnnxProcessor : IDisposable
         var dims = _nchw
             ? new[] { 1, 3 * n, height, width }
             : new[] { 1, height, width, 3 };
-
-        // Pack into a flat buffer with linear writes — far faster than the
-        // multi-dimensional DenseTensor indexer (which recomputes strides per
-        // element). Rented from the pool to avoid a large per-frame allocation.
         int inLen = 3 * n * pixels;
+
+        return _reuse
+            ? ProcessReused(frames, n, pixels, scale, inLen, dims)
+            : ProcessOneShot(frames, n, pixels, scale, inLen, dims);
+    }
+
+    // Per-call path: thread-safe, pools the input buffer, wraps a fresh tensor.
+    private byte[] ProcessOneShot(IReadOnlyList<byte[]> frames, int n, int pixels,
+        float scale, int inLen, int[] dims)
+    {
         float[] input = ArrayPool<float>.Shared.Rent(inLen);
         try
         {
-            if (_nchw)
-            {
-                // NCHW: channel plane c starts at c·pixels; pixel i sits at +i.
-                for (int f = 0; f < n; f++)
-                {
-                    var src = frames[f];
-                    for (int c = 0; c < 3; c++)
-                    {
-                        int plane = (3 * f + c) * pixels;
-                        for (int i = 0; i < pixels; i++)
-                            input[plane + i] = src[i * 3 + c] * scale;
-                    }
-                }
-            }
-            else
-            {
-                // NHWC interleaved == packed RGB order, so just scale in place.
-                var src = frames[0];
-                for (int k = 0; k < inLen; k++)
-                    input[k] = src[k] * scale;
-            }
-
+            PackInput(input, frames, n, pixels, inLen, scale);
             var inputTensor = new DenseTensor<float>(input.AsMemory(0, inLen), dims);
-            var inputs = new List<NamedOnnxValue>
+            using var results = _session.Run(new[]
             {
                 NamedOnnxValue.CreateFromTensor(_inputName, inputTensor)
-            };
-
-            using var results = _session.Run(inputs);
+            });
             var outTensor = (DenseTensor<float>)results.First().AsTensor<float>();
-            var outDims = outTensor.Dimensions;
-            var os = outTensor.Buffer.Span;
-
-            int outH = _nchw ? outDims[2] : outDims[1];
-            int outW = _nchw ? outDims[3] : outDims[2];
-            OutputWidth  = outW;
-            OutputHeight = outH;
-
-            int outPixels = outH * outW;
-            var output = new byte[outPixels * 3];
-            float inv = 255f / _rangeMax;
-
-            if (_nchw)
-            {
-                for (int c = 0; c < 3; c++)
-                {
-                    int plane = c * outPixels;
-                    for (int i = 0; i < outPixels; i++)
-                        output[i * 3 + c] = Clamp(os[plane + i] * inv);
-                }
-            }
-            else
-            {
-                for (int k = 0; k < outPixels * 3; k++)
-                    output[k] = Clamp(os[k] * inv);
-            }
-
+            SetOutputDims(outTensor.Dimensions);
+            var output = new byte[OutputWidth * OutputHeight * 3];
+            UnpackOutput(outTensor.Buffer.Span, output, OutputWidth * OutputHeight);
             return output;
         }
         finally
@@ -149,8 +121,103 @@ public sealed class OnnxProcessor : IDisposable
         }
     }
 
+    // Reuse path: input/output tensors are bound once and reused every frame, so
+    // ORT skips re-wrapping buffers each Run. Single-worker only (not thread-safe).
+    private byte[] ProcessReused(IReadOnlyList<byte[]> frames, int n, int pixels,
+        float scale, int inLen, int[] dims)
+    {
+        if (_inBuf == null || _inBuf.Length != inLen)
+        {
+            _inFixed?.Dispose();
+            _outFixed?.Dispose();
+            _outFixed = null; _outBuf = null;
+            _inBuf = new float[inLen];
+            _inFixed = FixedBufferOnnxValue.CreateFromTensor(new DenseTensor<float>(_inBuf, dims));
+            _inNames = new[] { _inputName };
+            _outNames = new[] { _outputName };
+        }
+
+        PackInput(_inBuf, frames, n, pixels, inLen, scale);
+
+        if (_outFixed == null)
+        {
+            // First frame: discover output dims with a normal Run, then bind output.
+            using var results = _session.Run(_inNames!, new[] { _inFixed! });
+            var outTensor = (DenseTensor<float>)results.First().AsTensor<float>();
+            SetOutputDims(outTensor.Dimensions);
+            _outBuf = new float[OutputWidth * OutputHeight * 3];
+            _outFixed = FixedBufferOnnxValue.CreateFromTensor(
+                new DenseTensor<float>(_outBuf, outTensor.Dimensions.ToArray()));
+            outTensor.Buffer.Span.CopyTo(_outBuf);
+        }
+        else
+        {
+            _session.Run(_inNames!, new[] { _inFixed! }, _outNames!, new[] { _outFixed });
+        }
+
+        var output = new byte[OutputWidth * OutputHeight * 3];
+        UnpackOutput(_outBuf!, output, OutputWidth * OutputHeight);
+        return output;
+    }
+
+    private void PackInput(float[] buf, IReadOnlyList<byte[]> frames, int n, int pixels,
+        int inLen, float scale)
+    {
+        if (_nchw)
+        {
+            // NCHW: channel plane c starts at c·pixels; pixel i sits at +i.
+            for (int f = 0; f < n; f++)
+            {
+                var src = frames[f];
+                for (int c = 0; c < 3; c++)
+                {
+                    int plane = (3 * f + c) * pixels;
+                    for (int i = 0; i < pixels; i++)
+                        buf[plane + i] = src[i * 3 + c] * scale;
+                }
+            }
+        }
+        else
+        {
+            // NHWC interleaved == packed RGB order, so just scale in place.
+            var src = frames[0];
+            for (int k = 0; k < inLen; k++)
+                buf[k] = src[k] * scale;
+        }
+    }
+
+    private void UnpackOutput(ReadOnlySpan<float> os, byte[] output, int outPixels)
+    {
+        float inv = 255f / _rangeMax;
+        if (_nchw)
+        {
+            for (int c = 0; c < 3; c++)
+            {
+                int plane = c * outPixels;
+                for (int i = 0; i < outPixels; i++)
+                    output[i * 3 + c] = Clamp(os[plane + i] * inv);
+            }
+        }
+        else
+        {
+            for (int k = 0; k < outPixels * 3; k++)
+                output[k] = Clamp(os[k] * inv);
+        }
+    }
+
+    private void SetOutputDims(ReadOnlySpan<int> outDims)
+    {
+        OutputHeight = _nchw ? outDims[2] : outDims[1];
+        OutputWidth  = _nchw ? outDims[3] : outDims[2];
+    }
+
     private static byte Clamp(float v) =>
         v <= 0f ? (byte)0 : v >= 255f ? (byte)255 : (byte)(v + 0.5f);
 
-    public void Dispose() => _session.Dispose();
+    public void Dispose()
+    {
+        _inFixed?.Dispose();
+        _outFixed?.Dispose();
+        _session.Dispose();
+    }
 }

@@ -31,6 +31,9 @@ public sealed class Pipeline(
         int frameSize = info.Width * info.Height * 3;
         long totalFrames = info.Duration > 0 ? (long)(info.Duration * info.Fps) : 0;
 
+        // A single worker runs inferences sequentially, so bound-buffer reuse is safe.
+        if (workers <= 1) processor.ReuseBuffers = true;
+
         // Run first frame to discover output dimensions before starting the encoder.
         var firstFrame = new byte[frameSize];
         using (var probeDecoder = FfmpegPipes.StartDecoder(inputPath, info.Width, info.Height))
@@ -154,6 +157,8 @@ public sealed class Pipeline(
         int half      = window / 2;
         int frameSize = info.Width * info.Height * 3;
         long total    = info.Duration > 0 ? (long)(info.Duration * info.Fps) : 0;
+
+        processor.ReuseBuffers = true;     // temporal path is single-threaded
 
         using var decoder = FfmpegPipes.StartDecoder(inputPath, info.Width, info.Height);
         var dstream = decoder.StandardOutput.BaseStream;
