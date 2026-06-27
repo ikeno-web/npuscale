@@ -14,8 +14,14 @@ import os, sys, urllib.request
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "fastdvdnet"))
-from models import FastDVDnet  # official architecture
+_FD = os.path.join(os.path.dirname(__file__), "fastdvdnet")
+os.makedirs(_FD, exist_ok=True)
+_MODELS = os.path.join(_FD, "models.py")
+if not os.path.exists(_MODELS):
+    urllib.request.urlretrieve(
+        "https://raw.githubusercontent.com/m-tassano/fastdvdnet/master/models.py", _MODELS)
+sys.path.insert(0, _FD)
+from models import FastDVDnet  # official architecture (m-tassano/fastdvdnet, MIT)
 
 PTH_URL  = "https://raw.githubusercontent.com/m-tassano/fastdvdnet/master/model.pth"
 PTH_FILE = os.path.join("fastdvdnet", "model.pth")
