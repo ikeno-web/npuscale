@@ -129,6 +129,87 @@ cd tools
 python convert_realesrgan.py   # downloads weights and exports realesrgan_x2.onnx + realesrgan_x4.onnx
 ```
 
+## How Real-ESRGAN super-resolution works
+
+### Simple upscaling vs. AI super-resolution
+
+**Bicubic / bilinear upscaling** calculates each new pixel as a weighted average of surrounding original pixels. It cannot add information that was not in the source — the result is always a smooth, slightly blurry version of the original.
+
+**Real-ESRGAN** takes a completely different approach: a deep neural network trained on millions of images *generates* the high-frequency detail that is physically absent from the low-resolution source.
+
+```
+Simple upscaling:   [blurry pixel average]  →  smooth but soft output
+Real-ESRGAN:        [learned reconstruction]  →  sharp edges + restored texture
+```
+
+### What "high-frequency reconstruction" means
+
+An image can be decomposed into:
+- **Low-frequency components** — overall brightness, color gradients, large shapes (preserved by any upscaler)
+- **High-frequency components** — fine edges, texture detail, grain (lost during downscaling / compression)
+
+When a video is encoded at 720p, the encoder discards high-frequency detail to save bitrate. Simple upscaling cannot recover what was thrown away. Real-ESRGAN's network has learned statistical patterns of how real-world textures, edges, and structures look at high resolution, and uses those patterns to *plausibly reconstruct* the missing detail.
+
+### The RRDB network
+
+Real-ESRGAN uses **RRDB (Residual in Residual Dense Block)** — a 23-layer stack of densely connected residual blocks:
+
+```
+Input frame (RGB)
+    │
+    ▼
+[PixelUnshuffle]  ← x2 model only: rearranges spatial pixels into channels
+    │              for better low-frequency preservation
+    ▼
+[Conv 3×3]  →  64 feature maps
+    │
+    ▼  ×23 times
+┌─────────────────────────────────┐
+│  Residual Dense Block           │
+│  ┌──────────────────────────┐   │
+│  │ conv → conv → conv → conv│   │  ← each conv sees all previous outputs
+│  │  (densely connected)     │   │     (Dense connection: max gradient flow)
+│  └──────────────────────────┘   │
+│  × 3  +  residual scaling 0.2   │  ← residual scaling stabilizes training
+└─────────────────────────────────┘
+    │
+    ▼
+[Nearest-neighbor upsample × 2 → Conv]  × 2  ← upsample in two stages
+    │                                          (avoids checkerboard artifacts)
+    ▼
+Output frame (2× or 4× resolution)
+```
+
+Dense connections inside each block mean every layer receives gradients from all subsequent layers — enabling very deep networks to train stably and capture both fine texture (shallow layers) and semantic structure (deep layers) simultaneously.
+
+### Training: degradation modeling
+
+Real-ESRGAN was trained with a **high-order degradation model** that simulates the full chain of real-world quality loss:
+
+```
+High-resolution ground truth
+    │
+    ▼  (simulated degradation pipeline)
+blur → downsample → noise → JPEG compression → blur → downsample → noise → JPEG
+    │
+    ▼
+Low-resolution training input  →  network  →  reconstructed HR  →  loss vs. ground truth
+```
+
+By training on this wide range of degradation types, the model generalizes to real compressed video, not just clean synthetic downscales. This is why it handles blocky MPEG artifacts, motion blur, and encoding noise — not just pure resolution loss.
+
+### Why upscale → downscale does NOT negate the benefit
+
+The value of Real-ESRGAN is realized **at display time on a high-resolution screen**, not by measuring pixels at the original resolution:
+
+| Scenario | Effect |
+|----------|--------|
+| 720p played on a 4K TV | The TV's built-in scaler uses simple bilinear — Real-ESRGAN pre-upscaling is sharper |
+| Upscale 720p → 4K, store as master | Permanent 4K archive with reconstructed detail |
+| Upscale 720p → 4K → downscale to 1080p | The SR step restores detail before downsampling, producing a cleaner 1080p than direct 720p→1080p |
+
+"Upscale then downscale to the same original resolution" is the one case where the benefit disappears — but that is not the intended use.
+
 ## Architecture
 
 ```
