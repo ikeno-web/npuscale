@@ -12,3 +12,4 @@ release/
 *.pth
 _src_frame.png
 tools/_*.png
+!tools/ci_identity.onnx
