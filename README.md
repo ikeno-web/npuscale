@@ -141,23 +141,31 @@ shown for reference but is tuned for compression artifacts and reads fine noise 
 > moderate noise. Re-export with a different σ via `tools/convert_fastdvdnet.py`
 > for heavier/lighter noise.
 
-### Temporal super-resolution (experimental)
+### Temporal super-resolution
 
-The pipeline handles models that are **both** temporal *and* upscaling — a model
-taking N stacked frames and emitting a higher-resolution frame. The window size
-is auto-detected from the input channel count and the scale from the output
-tensor, so no extra flags are needed:
+The pipeline handles models that are **both** temporal *and* upscaling — N stacked
+frames in, a higher-resolution frame out. Window size is auto-detected from the
+input channels, scale from the output tensor — no extra flags:
 
 ```bash
-npuscale -i in.mp4 -o out.mp4 --model temporal_sr2x_avg.onnx --provider directml -v
-# Output: 3840x2160 (temporal, 3-frame window, 2.00x)
+npuscale -i in.mp4 -o out.mp4 --model temporal_realesrgan_x4.onnx --provider directml -v
+# Output: 1920x1080 (temporal, 3-frame window, 4.00x)
 ```
 
-`tools/convert_temporal_sr.py` builds a small baseline model (3-frame temporal
-average + 2× upscale) that validates this path end to end. Production-grade video
-SR networks (EDVR, BasicVSR++) rely on deformable convolution and recurrent flow
-propagation that do **not** export to standard ONNX — so a high-quality temporal
-SR model is future work, but the pipeline is ready for one.
+`temporal_realesrgan_x4.onnx` (`tools/convert_temporal_realesrgan.py`) fuses 3
+neighbouring frames (averaging → noise suppression) before the pretrained
+**Real-ESRGAN x4** network upscales. On a noisy ×4 SR task it beats single-frame
+Real-ESRGAN — the fusion stops the network from amplifying noise into false detail:
+
+| ×4 SR of a noisy 480×270 clip | VMAF vs HR |
+|-------------------------------|-----------:|
+| single-frame Real-ESRGAN | 27.9 |
+| **temporal Real-ESRGAN (3-frame)** | **35.2** |
+
+This is *early-fusion* temporal SR (averaging), not the deformable-conv alignment
+of EDVR / BasicVSR++ — those don't export to standard ONNX. It's a simple, fully
+exportable model that nonetheless gives a real temporal gain.
+(`tools/convert_temporal_sr.py` is the even simpler averaging-only baseline.)
 
 ### Options
 
