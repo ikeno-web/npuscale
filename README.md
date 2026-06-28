@@ -141,6 +141,12 @@ shown for reference but is tuned for compression artifacts and reads fine noise 
 > moderate noise. Re-export with a different σ via `tools/convert_fastdvdnet.py`
 > for heavier/lighter noise.
 
+> **FP16 (half precision):** `dncnn_color_fp16.onnx` runs ~20 % faster
+> (12.0 → 14.6 fps on DirectML) at near-identical quality (PSNR 40.7 / SSIM 0.967
+> vs FP32) and half the size. Make your own with `tools/make_fp16.py`. Note: the
+> heavier Real-ESRGAN networks overflow FP16's numeric range on DirectML and need
+> per-layer mixed-precision tuning, so FP16 is currently a denoise-only win.
+
 ### Temporal super-resolution
 
 The pipeline handles models that are **both** temporal *and* upscaling — N stacked
@@ -228,6 +234,7 @@ cd tools
 python convert_realesrgan.py   # -> realesrgan_x2.onnx + realesrgan_x4.onnx (super-resolution)
 python convert_dncnn.py        # -> dncnn_color.onnx (spatial denoise)
 python convert_fastdvdnet.py   # -> fastdvdnet_s25.onnx (temporal denoise, 5-frame)
+python make_fp16.py            # -> *_fp16.onnx (half precision, ~20% faster denoise)
 ```
 
 ## How Real-ESRGAN super-resolution works
