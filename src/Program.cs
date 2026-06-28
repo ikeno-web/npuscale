@@ -6,7 +6,7 @@ public static class Program
     {
         string? input = null, output = null, model = null;
         string provider = "directml";
-        int deviceId = 0, workers = 2, crf = 18;
+        int deviceId = 0, workers = 2, crf = 18, tile = 0;
         string encoder = "libx264";
         bool nchw = true, verbose = false;
         float rangeMax = 1.0f;
@@ -21,6 +21,7 @@ public static class Program
                 case "--provider":   provider = args[++i]; break;
                 case "--device-id":  deviceId = int.Parse(args[++i]); break;
                 case "--workers":    workers  = int.Parse(args[++i]); break;
+                case "--tile":       tile     = int.Parse(args[++i]); break;
                 case "--encoder":    encoder  = args[++i]; break;
                 case "--crf":        crf      = int.Parse(args[++i]); break;
                 case "--layout":
@@ -76,7 +77,7 @@ public static class Program
         try
         {
             using var proc = new OnnxProcessor(model, provider, deviceId, nchw, rangeMax);
-            var pipeline   = new Pipeline(input, output, proc, workers, encoder, crf, verbose);
+            var pipeline   = new Pipeline(input, output, proc, workers, encoder, crf, verbose, tile);
             await pipeline.RunAsync();
             return 0;
         }

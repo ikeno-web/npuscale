@@ -10,8 +10,16 @@ public sealed class Pipeline(
     int workers,
     string encoder,
     int crf,
-    bool verbose)
+    bool verbose,
+    int tile = 0)
 {
+    const int TileOverlap = 16;   // px of shared context around each tile (avoids seams)
+
+    // Single-frame inference, optionally tiled for large frames / limited VRAM.
+    private byte[] Infer(byte[] data, int w, int h)
+        => tile > 0 ? processor.ProcessTiled(data, w, h, tile, TileOverlap)
+                    : processor.Process(data, w, h);
+
     public async Task RunAsync()
     {
         var info = MediaInfo.Probe(inputPath);
@@ -32,7 +40,8 @@ public sealed class Pipeline(
         long totalFrames = info.Duration > 0 ? (long)(info.Duration * info.Fps) : 0;
 
         // A single worker runs inferences sequentially, so bound-buffer reuse is safe.
-        if (workers <= 1) processor.ReuseBuffers = true;
+        // Tiling varies the tensor size per tile, so it can't use the bound buffer.
+        if (workers <= 1 && tile == 0) processor.ReuseBuffers = true;
 
         // Run first frame to discover output dimensions before starting the encoder.
         var firstFrame = new byte[frameSize];
@@ -43,7 +52,7 @@ public sealed class Pipeline(
             probeDecoder.Kill();
             probeDecoder.WaitForExit();
         }
-        var firstOut = processor.Process(firstFrame, info.Width, info.Height);
+        var firstOut = Infer(firstFrame, info.Width, info.Height);
         int outW = processor.OutputWidth;
         int outH = processor.OutputHeight;
 
@@ -82,7 +91,7 @@ public sealed class Pipeline(
             foreach (var (index, data) in inputQueue.GetConsumingEnumerable())
             {
                 if (index == 0) continue;           // frame 0 already processed
-                outputDict[index] = processor.Process(data, info.Width, info.Height);
+                outputDict[index] = Infer(data, info.Width, info.Height);
                 writerReady.Set();
             }
         })).ToArray();

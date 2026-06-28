@@ -73,6 +73,56 @@ public sealed class OnnxProcessor : IDisposable
     public byte[] Process(byte[] rgb24, int width, int height)
         => ProcessWindow(new[] { rgb24 }, width, height);
 
+    // Tiled single-frame processing: splits the frame into `tile`×`tile` regions
+    // (extended by `overlap` px of context on each side) so a large frame never
+    // hits the model at full size — lets Real-ESRGAN x4 run on limited VRAM at 4K.
+    // Only the interior of each tile is kept, so seams are avoided. NCHW only.
+    public byte[] ProcessTiled(byte[] rgb, int W, int H, int tile, int overlap)
+    {
+        // First tile (top-left) establishes the scale factor.
+        var (sub0, tw0, th0) = Crop(rgb, W, 0, 0, Math.Min(tile + overlap, W), Math.Min(tile + overlap, H));
+        var out0 = Process(sub0, tw0, th0);
+        int scale = OutputWidth / tw0;
+        int outW = W * scale, outH = H * scale;
+        var outFrame = new byte[outW * outH * 3];
+
+        for (int ty = 0; ty < H; ty += tile)
+        {
+            for (int tx = 0; tx < W; tx += tile)
+            {
+                int x0 = Math.Max(0, tx - overlap), y0 = Math.Max(0, ty - overlap);
+                int x1 = Math.Min(W, tx + tile + overlap), y1 = Math.Min(H, ty + tile + overlap);
+                int tw = x1 - x0, th = y1 - y0;
+
+                var (sub, _, _) = Crop(rgb, W, x0, y0, tw, th);
+                var subOut = (tx == 0 && ty == 0) ? out0 : Process(sub, tw, th);
+
+                // Interior region (the tile, clamped to the frame) within the sub-image.
+                int vw = Math.Min(tile, W - tx), vh = Math.Min(tile, H - ty);
+                int ox = (tx - x0) * scale, oy = (ty - y0) * scale;
+                Blit(subOut, tw * scale, ox, oy,
+                     outFrame, outW, tx * scale, ty * scale, vw * scale, vh * scale);
+            }
+        }
+        OutputWidth = outW; OutputHeight = outH;
+        return outFrame;
+    }
+
+    private static (byte[] sub, int w, int h) Crop(byte[] src, int srcW, int x, int y, int w, int h)
+    {
+        var sub = new byte[w * h * 3];
+        for (int r = 0; r < h; r++)
+            Array.Copy(src, ((y + r) * srcW + x) * 3, sub, r * w * 3, w * 3);
+        return (sub, w, h);
+    }
+
+    private static void Blit(byte[] src, int srcW, int sx, int sy,
+        byte[] dst, int dstW, int dx, int dy, int w, int h)
+    {
+        for (int r = 0; r < h; r++)
+            Array.Copy(src, ((sy + r) * srcW + sx) * 3, dst, ((dy + r) * dstW + dx) * 3, w * 3);
+    }
+
     // Processes a window of N consecutive frames stacked on the channel axis:
     // the input tensor is (1, 3·N, H, W). N==1 is the ordinary single-frame case;
     // temporal models (N>1, e.g. FastDVDnet) require NCHW layout.

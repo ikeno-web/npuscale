@@ -177,11 +177,17 @@ exportable model that nonetheless gives a real temporal gain.
 | `--provider NAME` | `directml` | Execution provider: `directml`, `cuda`, `cpu` |
 | `--device-id N` | `0` | GPU/NPU device index |
 | `--workers N` | `2` | Concurrent inference workers |
+| `--tile N` | `0` (off) | Process in N×N tiles (16 px overlap) for large frames / limited VRAM |
 | `--encoder NAME` | `libx264` | FFmpeg video encoder |
 | `--crf N` | `18` | Encoder quality (lower = better) |
 | `--layout NAME` | `nchw` | Tensor layout: `nchw` or `nhwc` |
 | `--in-range RANGE` | `0..1` | Input normalization: `0..1` or `0..255` |
 | `-v, --verbose` | off | Show progress and timing |
+
+> **Large frames / limited VRAM:** Real-ESRGAN ×4 on a 4K frame needs a lot of
+> memory. `--tile 512` splits each frame into 512×512 tiles (with 16 px of shared
+> context so there are no visible seams), trading speed for a much smaller memory
+> footprint. Tiled output matches the full-frame result to ~41 dB PSNR.
 
 ## NPU acceleration
 
