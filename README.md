@@ -1,5 +1,7 @@
 # npuscale
 
+[![CI](https://github.com/ikeno-web/npuscale/actions/workflows/ci.yml/badge.svg)](https://github.com/ikeno-web/npuscale/actions/workflows/ci.yml)
+
 **NPU-accelerated video enhancement using ONNX Runtime — super-resolution and denoising.**
 
 Stock FFmpeg handles decode/encode via pipes; npuscale runs AI inference on your NPU, GPU, or CPU with concurrent in-flight requests for maximum throughput. The pipeline is model-agnostic: give it a super-resolution model to upscale, or a denoise model to clean up noisy footage.
